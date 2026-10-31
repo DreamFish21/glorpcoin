@@ -39,7 +39,7 @@ http.createServer(async(req,res)=>{
     let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}
     const provided=Buffer.from(String(data.password||'')),expected=Buffer.from(process.env.HOST_PASSWORD);
     if(provided.length!==expected.length||!crypto.timingSafeEqual(provided,expected))return json(res,401,{error:'Неверный пароль стримера.'});
-    setCookie(res,req,'dropin_session',signObject({host:true,exp:Date.now()+12*60*60*1000}),12*60*60);return json(res,200,{ok:true})
+    const hostSessionLifetime=30*24*60*60;setCookie(res,req,'dropin_session',signObject({host:true,exp:Date.now()+hostSessionLifetime*1000}),hostSessionLifetime);return json(res,200,{ok:true})
   }
   if(req.method==='GET'&&pathname==='/auth/twitch'){
     if(!process.env.TWITCH_CLIENT_ID||!process.env.TWITCH_CLIENT_SECRET)return redirectAuthError(req,res,url.searchParams.get('return'),'unconfigured');
@@ -58,7 +58,8 @@ http.createServer(async(req,res)=>{
     }catch{clearCookie(res,req,'dropin_oauth');clearCookie(res,req,'dropin_session');return redirectAuthError(req,res,returnPath,'failed')}
   }
   if(req.method==='GET'&&pathname==='/auth/twitch/logout'){clearCookie(res,req,'dropin_session');const target=new URL(safeReturnPath(url.searchParams.get('return')),publicBase(req));res.writeHead(302,{Location:target.toString(),'Cache-Control':'no-store'});return res.end()}
-  if(req.method==='GET'&&pathname==='/api/me'){const session=getSession(req);return json(res,200,{authenticated:Boolean(session?.login),login:session?.login||null,isHost:session?isHost(req):false})}
+  if(req.method==='GET'&&pathname==='/api/me'){const session=getSession(req);return json(res,200,{authenticated:Boolean(session?.login),login:session?.login||null,isHost:isHost(req)})}
+  if(req.method==='GET'&&pathname==='/api/snapshot'){if(!isHost(req))return json(res,403,{error:'Требуется вход стримера.'});return json(res,200,game)}
   if(req.method==='GET'&&pathname==='/api/state'){const session=getSession(req);if(!session?.login)return json(res,401,{error:'Сначала войди через Twitch.'});return json(res,200,playerState(session.login.toLowerCase()))}
   if(req.method==='GET'&&pathname==='/api/events'){
     const role=url.searchParams.get('role')==='host'?'host':'viewer',session=getSession(req),login=session?.login?.toLowerCase()||'';
