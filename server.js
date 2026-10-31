@@ -26,12 +26,19 @@ function setCookie(res,req,name,value,maxAge){appendCookie(res,`${name}=${encode
 function clearCookie(res,req,name){appendCookie(res,`${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(req)}`)}
 function safeReturnPath(value){return typeof value==='string'&&value.startsWith('/')&&!value.startsWith('//')?value:'/player.html'}
 function redirectAuthError(req,res,returnPath,error){const url=new URL(safeReturnPath(returnPath),publicBase(req));url.searchParams.set('auth',error);res.writeHead(302,{Location:url.toString(),'Cache-Control':'no-store'});res.end()}
-function isHost(req){if(process.env.NODE_ENV!=='production')return true;const session=getSession(req),broadcaster=(process.env.BROADCASTER_LOGIN||'').trim().toLowerCase();return Boolean(session?.login&&broadcaster&&session.login.toLowerCase()===broadcaster)}
+function isHost(req){if(process.env.NODE_ENV!=='production')return true;const session=getSession(req),broadcaster=(process.env.BROADCASTER_LOGIN||'').trim().toLowerCase();return Boolean(session?.host||session?.login&&broadcaster&&session.login.toLowerCase()===broadcaster)}
 function serveFile(pathname,res){const relative=pathname==='/'?'index.html':pathname.replace(/^\/+/, '');const file=path.resolve(root,relative);if(!file.startsWith(root+path.sep)&&file!==path.join(root,'index.html')){res.writeHead(403);res.end('Forbidden');return}fs.readFile(file,(error,data)=>{if(error){res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'});res.end('Not found');return}res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream','Cache-Control':'no-store'});res.end(data)})}
 
 http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost'),pathname=decodeURIComponent(url.pathname);
   if(req.method==='GET'&&pathname==='/health')return json(res,200,{ok:true});
+  if(req.method==='POST'&&pathname==='/auth/host'){
+    if(!process.env.HOST_PASSWORD)return json(res,503,{error:'Вход стримера не настроен в Render.'});
+    let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}
+    const provided=Buffer.from(String(data.password||'')),expected=Buffer.from(process.env.HOST_PASSWORD);
+    if(provided.length!==expected.length||!crypto.timingSafeEqual(provided,expected))return json(res,401,{error:'Неверный пароль стримера.'});
+    setCookie(res,req,'dropin_session',signObject({host:true,exp:Date.now()+12*60*60*1000}),12*60*60);return json(res,200,{ok:true})
+  }
   if(req.method==='GET'&&pathname==='/auth/twitch'){
     if(!process.env.TWITCH_CLIENT_ID||!process.env.TWITCH_CLIENT_SECRET)return redirectAuthError(req,res,url.searchParams.get('return'),'unconfigured');
     const state=crypto.randomBytes(24).toString('base64url'),returnPath=safeReturnPath(url.searchParams.get('return')),payload=signObject({state,returnPath,exp:Date.now()+10*60*1000}),redirectUri=new URL('/auth/twitch/callback',publicBase(req)).toString();setCookie(res,req,'dropin_oauth',payload,600);

@@ -18,14 +18,13 @@ GlorpCoin — симулятор рынка для Twitch-чата. Команд
 
 1. Добавь проект в свой GitHub-репозиторий и подключи его в Render как **Web Service** по Blueprint `render.yaml`.
 2. После создания сервиса скопируй выданный HTTPS-адрес, например `https://имя-сервиса.onrender.com`.
-3. В Twitch Developer Console зарегистрируй приложение. В поле **OAuth Redirect URLs** добавь адрес с путём `/auth/twitch/callback`, например `https://имя-сервиса.onrender.com/auth/twitch/callback`. Тип клиента — **Confidential**.
-4. В Render → **Environment** заполни `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` и `BROADCASTER_LOGIN` (логин владельца Twitch-канала). Установи `PUBLIC_BASE_URL` равным HTTPS-адресу сервиса. Не публикуй Client Secret и не добавляй его в исходники.
-5. Перезапусти сервис и на его главной странице выбери **Войти как стример Twitch**. После входа открой Streamer.bot в браузере стримера и подключи его WebSocket.
-6. Отправь зрителям `https://имя-сервиса.onrender.com/player.html`.
+3. Render автоматически создаст `HOST_PASSWORD` и `SESSION_SECRET`. На главной странице нажми **Войти как стример** и используй `HOST_PASSWORD` из Render → **Environment**. Не отправляй этот пароль зрителям.
+4. Открой Streamer.bot в браузере стримера и подключи его WebSocket.
+5. Отправь зрителям `https://имя-сервиса.onrender.com/player.html`.
 
 Вход игрока через Twitch **не обязателен**: на странице игрока можно ввести ник вручную. Включи `REQUIRE_TWITCH_LOGIN=true` в настройках Render только если позже захочешь требовать проверенный вход; по умолчанию стоит `false`. Вход через Twitch привязывает страницу к проверенному аккаунту и не позволяет подменить ник.
 
-Для проверки входа нужны Twitch Client ID и Client Secret, а redirect URL в Twitch Developer Console должен точно совпадать с адресом Render. Сервер проверяет OAuth сессию через Twitch `/validate`. Статус игры передаётся через активную страницу стримера; она должна оставаться открытой во время рынка. Текущее состояние хранится в памяти процесса Node.js.
+Проверка Twitch-аккаунта для участников необязательна: по умолчанию включён ручной вход по нику. Для входа стримера используется отдельный пароль, сгенерированный Render. OAuth Twitch можно настроить дополнительно, добавив `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` и `BROADCASTER_LOGIN` в Render → **Environment**; redirect URL в Twitch Developer Console должен совпадать с адресом Render и путём `/auth/twitch/callback`. Статус игры передаётся через активную страницу стримера; она должна оставаться открытой во время рынка. Текущее состояние хранится в памяти процесса Node.js.
 
 ## Streamer.bot
 

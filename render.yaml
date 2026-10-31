@@ -12,13 +12,7 @@ services:
         value: production
       - key: SESSION_SECRET
         generateValue: true
-      - key: TWITCH_CLIENT_ID
-        sync: false
-      - key: TWITCH_CLIENT_SECRET
-        sync: false
-      - key: BROADCASTER_LOGIN
-        sync: false
-      - key: PUBLIC_BASE_URL
-        sync: false
+      - key: HOST_PASSWORD
+        generateValue: true
       - key: REQUIRE_TWITCH_LOGIN
         value: "false"
