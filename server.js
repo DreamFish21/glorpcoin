@@ -6,12 +6,12 @@ const crypto = require('node:crypto');
 const root = __dirname;
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.svg':'image/svg+xml'};
 const clients = new Set();
-const game = {marketState:'waiting',marketPrice:50,priceHistory:[],players:[]};
+const game = {marketState:'waiting',marketPrice:50,priceHistory:[],players:[],marketStartedAt:0,nextPriceTickAt:0,marketEndsAt:0};
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 function json(res,status,payload){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(payload))}
 function sendEvent(client,name,payload){if(!client.res.destroyed)client.res.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`)}
-function playerState(login){const player=game.players.find(item=>item.name.toLowerCase()===login);return {marketState:game.marketState,marketPrice:game.marketPrice,priceHistory:game.priceHistory,player:player?{name:player.name,spriteId:player.spriteId,points:player.points,coins:player.coins}:null}}
+function playerState(login){const player=game.players.find(item=>item.name.toLowerCase()===login);return {marketState:game.marketState,marketPrice:game.marketPrice,priceHistory:game.priceHistory,marketStartedAt:game.marketStartedAt,nextPriceTickAt:game.nextPriceTickAt,marketEndsAt:game.marketEndsAt,priceTickMs:8000,player:player?{name:player.name,spriteId:player.spriteId,points:player.points,coins:player.coins}:null}}
 function publishState(){for(const client of clients)if(client.role==='viewer')sendEvent(client,'state',playerState(client.login))}
 function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>1_000_000){reject(new Error('Request too large'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch{reject(new Error('Invalid JSON'))}});req.on('error',reject)})}
 function signature(value){return crypto.createHmac('sha256',sessionSecret).update(value).digest('base64url')}
@@ -66,7 +66,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&pathname==='/api/snapshot'){
     if(!isHost(req))return json(res,403,{error:'Для публикации состояния войди на Twitch как владелец канала.'});
-    try{const data=await readJson(req);game.marketState=['waiting','running','finished'].includes(data.marketState)?data.marketState:'waiting';game.marketPrice=Number.isFinite(Number(data.marketPrice))?Number(data.marketPrice):50;game.priceHistory=Array.isArray(data.priceHistory)?data.priceHistory.slice(-80).map(Number).filter(Number.isFinite):[];game.players=Array.isArray(data.players)?data.players.slice(0,100).filter(player=>typeof player.name==='string').map(player=>({name:player.name.slice(0,25),spriteId:Math.max(1,Math.min(50,Number(player.spriteId)||1)),points:Number(player.points)||0,coins:Number(player.coins)||0})):[];publishState();return json(res,200,{ok:true})}catch(error){return json(res,error.message==='Invalid JSON'?400:413,{error:error.message})}
+    try{const data=await readJson(req);game.marketState=['waiting','running','finished'].includes(data.marketState)?data.marketState:'waiting';game.marketPrice=Number.isFinite(Number(data.marketPrice))?Number(data.marketPrice):50;game.priceHistory=Array.isArray(data.priceHistory)?data.priceHistory.slice(-80).map(Number).filter(Number.isFinite):[];game.marketStartedAt=Number(data.marketStartedAt)||0;game.nextPriceTickAt=Number(data.nextPriceTickAt)||0;game.marketEndsAt=Number(data.marketEndsAt)||0;game.players=Array.isArray(data.players)?data.players.slice(0,100).filter(player=>typeof player.name==='string').map(player=>({name:player.name.slice(0,25),spriteId:Math.max(1,Math.min(50,Number(player.spriteId)||1)),points:Number(player.points)||0,coins:Number(player.coins)||0})):[];publishState();return json(res,200,{ok:true})}catch(error){return json(res,error.message==='Invalid JSON'?400:413,{error:error.message})}
   }
   if(req.method==='POST'&&pathname==='/api/trade'){
     let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}
