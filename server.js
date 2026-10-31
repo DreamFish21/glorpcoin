@@ -17,22 +17,24 @@ function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on(
 function signature(value){return crypto.createHmac('sha256',sessionSecret).update(value).digest('base64url')}
 function signObject(value){const body=Buffer.from(JSON.stringify(value)).toString('base64url');return `${body}.${signature(body)}`}
 function verifyObject(value){if(typeof value!=='string')return null;const [body,provided]=value.split('.');if(!body||!provided)return null;const expected=signature(body),a=Buffer.from(provided),b=Buffer.from(expected);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return null;try{const data=JSON.parse(Buffer.from(body,'base64url').toString('utf8'));return data.exp>Date.now()?data:null}catch{return null}}
-function getCookie(req,name){const cookies=(req.headers.cookie||'').split(';');for(const item of cookies){const separator=item.indexOf('=');if(separator<0)continue;if(item.slice(0,separator).trim()===name)return decodeURIComponent(item.slice(separator+1).trim())}return null}
+function getCookie(req,name){const cookies=(req.headers.cookie||'').split(';');for(const item of cookies){const separator=item.indexOf('=');if(separator<0)continue;if(item.slice(0,separator).trim()===name){try{return decodeURIComponent(item.slice(separator+1).trim())}catch{return null}}}return null}
 function getSession(req){return verifyObject(getCookie(req,'dropin_session'))}
 function appendCookie(res,value){const current=res.getHeader('Set-Cookie');res.setHeader('Set-Cookie',[...(Array.isArray(current)?current:current?[current]:[]),value])}
 function publicBase(req){const configured=process.env.PUBLIC_BASE_URL||process.env.RENDER_EXTERNAL_URL;if(configured)return configured.replace(/\/+$/,'');const protocol=req.headers['x-forwarded-proto']||'http';return `${protocol}://${req.headers.host||`localhost:${process.env.PORT||3001}`}`.replace(/\/+$/,'')}
 function secureCookie(req){return publicBase(req).startsWith('https://')?'; Secure':''}
 function setCookie(res,req,name,value,maxAge){appendCookie(res,`${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureCookie(req)}`)}
 function clearCookie(res,req,name){appendCookie(res,`${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(req)}`)}
-function safeReturnPath(value){return typeof value==='string'&&value.startsWith('/')&&!value.startsWith('//')?value:'/player.html'}
+function safeReturnPath(value){return typeof value==='string'&&value.startsWith('/')&&!value.startsWith('//')&&!value.includes('\\')&&!/[\r\n]/.test(value)?value:'/player.html'}
+function sameOrigin(req){const origin=req.headers.origin;if(!origin)return false;try{return new URL(origin).origin===new URL(publicBase(req)).origin}catch{return false}}
 function redirectAuthError(req,res,returnPath,error){const url=new URL(safeReturnPath(returnPath),publicBase(req));url.searchParams.set('auth',error);res.writeHead(302,{Location:url.toString(),'Cache-Control':'no-store'});res.end()}
 function isHost(req){if(process.env.NODE_ENV!=='production')return true;const session=getSession(req),broadcaster=(process.env.BROADCASTER_LOGIN||'').trim().toLowerCase();return Boolean(session?.host||session?.login&&broadcaster&&session.login.toLowerCase()===broadcaster)}
 function serveFile(pathname,res){const relative=pathname==='/'?'index.html':pathname.replace(/^\/+/, '');const file=path.resolve(root,relative);if(!file.startsWith(root+path.sep)&&file!==path.join(root,'index.html')){res.writeHead(403);res.end('Forbidden');return}fs.readFile(file,(error,data)=>{if(error){res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'});res.end('Not found');return}res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream','Cache-Control':'no-store'});res.end(data)})}
 
 http.createServer(async(req,res)=>{
-  const url=new URL(req.url,'http://localhost'),pathname=decodeURIComponent(url.pathname);
+  let url,pathname;try{url=new URL(req.url,'http://localhost');pathname=decodeURIComponent(url.pathname)}catch{return json(res,400,{error:'Некорректный URL.'})}
   if(req.method==='GET'&&pathname==='/health')return json(res,200,{ok:true});
   if(req.method==='POST'&&pathname==='/auth/host'){
+    if(!sameOrigin(req))return json(res,403,{error:'Недоверенный источник запроса.'});
     if(!process.env.HOST_PASSWORD)return json(res,503,{error:'Вход стримера не настроен в Render.'});
     let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}
     const provided=Buffer.from(String(data.password||'')),expected=Buffer.from(process.env.HOST_PASSWORD);
@@ -57,20 +59,22 @@ http.createServer(async(req,res)=>{
   }
   if(req.method==='GET'&&pathname==='/auth/twitch/logout'){clearCookie(res,req,'dropin_session');const target=new URL(safeReturnPath(url.searchParams.get('return')),publicBase(req));res.writeHead(302,{Location:target.toString(),'Cache-Control':'no-store'});return res.end()}
   if(req.method==='GET'&&pathname==='/api/me'){const session=getSession(req);return json(res,200,{authenticated:Boolean(session?.login),login:session?.login||null,isHost:session?isHost(req):false})}
-  if(req.method==='GET'&&pathname==='/api/state'){const login=getSession(req)?.login||(url.searchParams.get('login')||'').trim().toLowerCase();return json(res,200,playerState(login))}
+  if(req.method==='GET'&&pathname==='/api/state'){const session=getSession(req);if(!session?.login)return json(res,401,{error:'Сначала войди через Twitch.'});return json(res,200,playerState(session.login.toLowerCase()))}
   if(req.method==='GET'&&pathname==='/api/events'){
-    const role=url.searchParams.get('role')==='host'?'host':'viewer',login=getSession(req)?.login||(url.searchParams.get('login')||'').trim().toLowerCase();
+    const role=url.searchParams.get('role')==='host'?'host':'viewer',session=getSession(req),login=session?.login?.toLowerCase()||'';
     if(role==='host'&&!isHost(req))return json(res,403,{error:'Для управления рынком войди на Twitch как владелец канала.'});
-    if(role==='viewer'&&!login)return json(res,400,{error:'Укажите Twitch-ник'});
+    if(role==='viewer'&&!login)return json(res,401,{error:'Сначала войди через Twitch.'});
     res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});res.write('retry: 2000\n\n');const client={res,role,login};clients.add(client);if(role==='viewer')sendEvent(client,'state',playerState(login));res.on('close',()=>clients.delete(client));return
   }
   if(req.method==='POST'&&pathname==='/api/snapshot'){
+    if(!sameOrigin(req))return json(res,403,{error:'Недоверенный источник запроса.'});
     if(!isHost(req))return json(res,403,{error:'Для публикации состояния войди на Twitch как владелец канала.'});
     try{const data=await readJson(req);game.marketState=['waiting','running','finished'].includes(data.marketState)?data.marketState:'waiting';game.marketPrice=Number.isFinite(Number(data.marketPrice))?Number(data.marketPrice):50;game.priceHistory=Array.isArray(data.priceHistory)?data.priceHistory.slice(-80).map(Number).filter(Number.isFinite):[];game.marketStartedAt=Number(data.marketStartedAt)||0;game.nextPriceTickAt=Number(data.nextPriceTickAt)||0;game.marketEndsAt=Number(data.marketEndsAt)||0;game.players=Array.isArray(data.players)?data.players.slice(0,100).filter(player=>typeof player.name==='string').map(player=>({name:player.name.slice(0,25),spriteId:Math.max(1,Math.min(50,Number(player.spriteId)||1)),points:Number(player.points)||0,coins:Number(player.coins)||0})):[];publishState();return json(res,200,{ok:true})}catch(error){return json(res,error.message==='Invalid JSON'?400:413,{error:error.message})}
   }
   if(req.method==='POST'&&pathname==='/api/trade'){
+    if(!sameOrigin(req))return json(res,403,{error:'Недоверенный источник запроса.'});
     let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}
-    const session=getSession(req);if(process.env.REQUIRE_TWITCH_LOGIN==='true'&&!session?.login)return json(res,401,{error:'Сначала войди через Twitch.'});const login=session?.login||(typeof data.login==='string'?data.login.trim().toLowerCase():''),type=data.type,quantity=Number(data.quantity),player=game.players.find(item=>item.name.toLowerCase()===login);
+    const session=getSession(req);if(!session?.login)return json(res,401,{error:'Сначала войди через Twitch.'});const login=session.login.toLowerCase(),type=data.type,quantity=Number(data.quantity),player=game.players.find(item=>item.name.toLowerCase()===login);
     if(!player)return json(res,404,{error:'Участник не найден. Проверь Twitch-ник или сначала напиши !glorp в чате.'});
     if(game.marketState!=='running')return json(res,409,{error:'Торги сейчас закрыты.'});
     if(!['buy','sell'].includes(type)||!Number.isFinite(quantity)||quantity<=0||quantity>1_000_000)return json(res,400,{error:'Укажи количество больше нуля.'});
@@ -80,6 +84,7 @@ http.createServer(async(req,res)=>{
     const trade={id:crypto.randomUUID(),login:player.name,type,quantity};for(const client of hosts)sendEvent(client,'trade',trade);return json(res,202,{ok:true,id:trade.id,message:'Сделка отправлена в игру.'})
   }
   if(req.method==='POST'&&pathname==='/api/trade-result'){
+    if(!sameOrigin(req))return json(res,403,{error:'Недоверенный источник запроса.'});
     if(!isHost(req))return json(res,403,{error:'Недостаточно прав.'});let data;try{data=await readJson(req)}catch(error){return json(res,400,{error:error.message})}const login=typeof data.login==='string'?data.login.trim().toLowerCase():'';for(const client of clients)if(client.role==='viewer'&&client.login===login)sendEvent(client,'trade-result',{ok:Boolean(data.ok),message:String(data.message||'Сделка обработана.')});return json(res,200,{ok:true})
   }
   if(req.method==='GET')return serveFile(pathname,res);
