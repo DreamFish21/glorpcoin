@@ -19,6 +19,7 @@ const marketActive=document.querySelector('#marketActive');
 const marketLeaderboard=document.querySelector('#marketLeaderboard');
 const participantRoster=document.querySelector('#participantRoster');
 const marketMessage=document.querySelector('#marketMessage');
+const hostAccountLabel=document.querySelector('.host-card strong');
 const colors=['#bc94fa','#ef8fbd','#80c8f4','#f0b87a','#94d7bb','#e99aed','#e98b7d','#91a4f1'];
 const players=[];
 const maxParticipants=100;
@@ -27,6 +28,7 @@ let toastTimer,chatSocket,chatSocketTimeout,chatConnectionError='',restoringSnap
 let marketState='waiting',marketFrame=0,hideNames=false,canvasWidth=0,canvasHeight=0,lastHudUpdate=0;
 let marketStartedAt=0,lastPriceTick=0,marketStartedWallTime=0,nextPriceTickAt=0,marketEndsAt=0,marketPrice=50,priceHistory=[];
 const savedRoundSettings=(()=>{try{return JSON.parse(localStorage.getItem('dropin_round_settings')||'{}')}catch{return {}}})();
+try{const savedStreamerLogin=localStorage.getItem('dropin_streamer_login');if(savedStreamerLogin)hostAccountLabel.textContent=savedStreamerLogin}catch{}
 let startingPoints=Math.max(1,Math.min(100000000,Math.floor(Number(savedRoundSettings.startingPoints)||1000))),marketDuration=Math.max(15,Math.min(600,Math.floor(Number(savedRoundSettings.durationSeconds)||90)))*1000,ordinaryJumpsSinceSuper=0,nextSuperJumpAfter=4+Math.floor(Math.random()*7);
 const priceTickMs=8000;
 function setChatStatus(label,connected=false){chatStatus.innerHTML=`<i></i> ${label}`;chatStatus.classList.toggle('connected',connected)}
@@ -112,7 +114,7 @@ function connectStreamerBot(){
     if(packet.request==='Hello'&&!subscribed){clearTimeout(chatSocketTimeout);if(packet.authentication){const password=prompt('В Streamer.bot включена защита WebSocket. Введи пароль WebSocket:');if(password===null){chatConnectionError='ПОДКЛЮЧЕНИЕ ОТМЕНЕНО';setChatStatus(chatConnectionError);socket.close();return}const authentication=await makeAuth(password,packet.authentication.salt,packet.authentication.challenge);socket.send(JSON.stringify({request:'Authenticate',id:'dropin-auth',authentication}));chatSocketTimeout=setTimeout(()=>failConnection('НЕТ ОТВЕТА АВТОРИЗАЦИИ','Проверь пароль WebSocket Streamer.bot.'),5000);return}subscribe();return}
     if(packet.id==='dropin-auth'){clearTimeout(chatSocketTimeout);if(packet.status==='ok')subscribe();else failConnection('ПАРОЛЬ WEBSOCKET НЕ ПОДОШЁЛ','Проверь пароль в настройках WebSocket Streamer.bot.');return}
     if(packet.id==='dropin-chat'){clearTimeout(chatSocketTimeout);if(packet.status==='ok'){chatConnectionError='';setChatStatus('ЧАТ STREAMER.BOT',true);connectButton.innerHTML='<span>◉</span> Streamer.bot подключён';connectButton.classList.add('connected')}else failConnection('НЕ УДАЛОСЬ ПОДПИСАТЬСЯ',packet.error||'Не удалось подписаться на Twitch ChatMessage.');return}
-    if(packet.event?.source==='Twitch'&&packet.event?.type==='ChatMessage'){const data=packet.data||{},text=typeof data.text==='string'?data.text:typeof data.message==='string'?data.message:'',login=data.user?.login||data.userLogin||data.userName||data.user?.name;if(login){const broadcaster=data.broadcaster?.login||data.broadcaster?.name;if(broadcaster)document.querySelector('.host-card strong').textContent=broadcaster;handleTradeCommand(login,text)}}
+    if(packet.event?.source==='Twitch'&&packet.event?.type==='ChatMessage'){const data=packet.data||{},text=typeof data.text==='string'?data.text:typeof data.message==='string'?data.message:'',login=data.user?.login||data.userLogin||data.userName||data.user?.name;if(login){const broadcaster=data.broadcaster?.login||data.broadcaster?.name;if(broadcaster){hostAccountLabel.textContent=broadcaster;try{localStorage.setItem('dropin_streamer_login',broadcaster)}catch{}}handleTradeCommand(login,text)}}
   });
   socket.addEventListener('close',()=>{clearTimeout(chatSocketTimeout);if(chatSocket===socket){chatSocket=null;connectButton.innerHTML='<span>◉</span> Повторить подключение';connectButton.classList.remove('connected');setChatStatus(chatConnectionError||'ЧАТ ОТКЛЮЧЁН')}});
   socket.addEventListener('error',()=>{if(chatSocket===socket)failConnection('STREAMER.BOT НЕДОСТУПЕН',`Не удалось подключиться к ${host}:${port}. Проверь сервер WebSocket.`)});
@@ -131,7 +133,7 @@ function restoreMarketSnapshot(snapshot){
   restoringSnapshot=false;placeWaitingPlayers();updateMarketControls();updateParticipantRoster();updateMarketHud(performance.now(),true);updateMarketTimers();drawMarket();if(marketState==='running')marketFrame=requestAnimationFrame(updateMarket)
 }
 async function initializeStreamerSession(){
-  try{const response=await fetch('/api/me',{cache:'no-store'}),me=await response.json();if(!response.ok||!me.isHost){restoringSnapshot=false;setChatStatus('ВОЙДИ КАК СТРИМЕР');return}const snapshotResponse=await fetch('/api/snapshot',{cache:'no-store'});if(snapshotResponse.ok)restoreMarketSnapshot(await snapshotResponse.json());else restoringSnapshot=false;connectTradeBridge();connectStreamerBot()}catch{restoringSnapshot=false;setChatStatus('НЕ УДАЛОСЬ ВОССТАНОВИТЬ СЕССИЮ')}}
+  try{const response=await fetch('/api/me',{cache:'no-store'}),me=await response.json();if(!response.ok||!me.isHost){restoringSnapshot=false;setChatStatus('ВОЙДИ КАК СТРИМЕР');return}if(me.login){hostAccountLabel.textContent=me.login;try{localStorage.setItem('dropin_streamer_login',me.login)}catch{}}const snapshotResponse=await fetch('/api/snapshot',{cache:'no-store'});if(snapshotResponse.ok)restoreMarketSnapshot(await snapshotResponse.json());else restoringSnapshot=false;connectTradeBridge();connectStreamerBot()}catch{restoringSnapshot=false;setChatStatus('НЕ УДАЛОСЬ ВОССТАНОВИТЬ СЕССИЮ')}}
 initializeStreamerSession();
 setInterval(updateMarketTimers,250);
 document.querySelector('#settingsButton').addEventListener('click',()=>{const currentHost=localStorage.getItem('dropin_sb_host')||'127.0.0.1',host=prompt('Адрес Streamer.bot',currentHost);if(host===null)return;const port=prompt('Порт WebSocket (по умолчанию 8080)',localStorage.getItem('dropin_sb_port')||'8080');if(port===null)return;localStorage.setItem('dropin_sb_host',host.trim()||'127.0.0.1');localStorage.setItem('dropin_sb_port',port.trim()||'8080')});
