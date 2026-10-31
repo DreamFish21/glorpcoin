@@ -33,7 +33,7 @@ try{const savedStreamerLogin=localStorage.getItem('dropin_streamer_login');if(sa
 let startingPoints=Math.max(1,Math.min(100000000,Math.floor(Number(savedRoundSettings.startingPoints)||1000))),marketDuration=Math.max(15,Math.min(600,Math.floor(Number(savedRoundSettings.durationSeconds)||90)))*1000,ordinaryJumpsSinceSuper=0,nextSuperJumpAfter=4+Math.floor(Math.random()*7);
 const priceTickMs=8000;
 function setChatStatus(label,connected=false){chatStatus.innerHTML=`<i></i> ${label}`;chatStatus.classList.toggle('connected',connected)}
-function avatarPath(index){return `assets/chibis/glorp-${String(Math.max(1,Math.min(50,Number(index)||1))).padStart(2,'0')}.svg`}
+function avatarPath(index){return `assets/chibis/reference/glorp-${String(Math.max(1,Math.min(50,Number(index)||1))).padStart(2,'0')}.png`}
 function makeSprite(index){const image=document.createElement('img');image.className='glorp-chibi';image.src=avatarPath(index);image.alt=`Глорп ${index}`;image.draggable=false;return image}
 function makeAvatar(index){const image=document.createElement('img');image.className='user-avatar';image.src=avatarPath(index);image.alt='';image.draggable=false;return image}
 function waitingPosition(index){const side=index%2,row=Math.floor(index/2)%8,column=Math.floor(index/16);return {x:side?91-column*8:9+column*8,y:25+row*7.1}}
