@@ -1,0 +1,12 @@
+{
+  "name": "drop-in-glorpcoin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Twitch chat GlorpCoin trading game and participant pages",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

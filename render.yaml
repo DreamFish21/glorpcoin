@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: drop-in-glorpcoin
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TWITCH_CLIENT_ID
+        sync: false
+      - key: TWITCH_CLIENT_SECRET
+        sync: false
+      - key: BROADCASTER_LOGIN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: REQUIRE_TWITCH_LOGIN
+        value: "false"

@@ -1,0 +1,120 @@
+const arena=document.querySelector('#arena');
+const marketCanvas=document.querySelector('#marketCanvas');
+const arenaCard=document.querySelector('.arena-card');
+const ctx=marketCanvas.getContext('2d');
+const emptyState=document.querySelector('#emptyState');
+const countLabel=document.querySelector('#countLabel');
+const activityTotal=document.querySelector('#activityTotal');
+const activityList=document.querySelector('#activityList');
+const toast=document.querySelector('#toast');
+const connectButton=document.querySelector('#twitchConnect');
+const chatStatus=document.querySelector('#chatStatus');
+const arenaStatus=document.querySelector('#arenaStatus');
+const startMarketButton=document.querySelector('#startMarketButton');
+const toggleNamesButton=document.querySelector('#toggleNamesButton');
+const marketLeaderName=document.querySelector('#marketLeaderName');
+const marketTopScore=document.querySelector('#marketTopScore');
+const marketActive=document.querySelector('#marketActive');
+const marketLeaderboard=document.querySelector('#marketLeaderboard');
+const participantRoster=document.querySelector('#participantRoster');
+const marketMessage=document.querySelector('#marketMessage');
+const colors=['#bc94fa','#ef8fbd','#80c8f4','#f0b87a','#94d7bb','#e99aed','#e98b7d','#91a4f1'];
+const players=[];
+const maxParticipants=100;
+let generatedNameCounter=0;
+let toastTimer,chatSocket,chatSocketTimeout,chatConnectionError='';
+let marketState='waiting',marketFrame=0,hideNames=false,canvasWidth=0,canvasHeight=0,lastHudUpdate=0;
+let marketStartedAt=0,lastPriceTick=0,marketPrice=50,priceHistory=[];
+const startingPoints=1000,marketDuration=90000,priceTickMs=8000;
+function setChatStatus(label,connected=false){chatStatus.innerHTML=`<i></i> ${label}`;chatStatus.classList.toggle('connected',connected)}
+function makeSprite(index){const image=document.createElement('img');image.className='glorp-chibi';image.src=`assets/chibis/chibi-${String(index).padStart(2,'0')}.png`;image.alt=`Глорп ${index}`;image.draggable=false;return image}
+function makeAvatar(index){const image=document.createElement('img');image.className='user-avatar';image.src=`assets/chibis/chibi-${String(index).padStart(2,'0')}.png`;image.alt='';image.draggable=false;return image}
+function waitingPosition(index){const side=index%2,row=Math.floor(index/2)%8,column=Math.floor(index/16);return {x:side?91-column*8:9+column*8,y:25+row*7.1}}
+function placeWaitingPlayers(){players.forEach((player,index)=>{const point=waitingPosition(index);player.tag.style.left=`${point.x}%`;player.tag.style.top=`${point.y}%`})}
+function formatPoints(value){return Math.max(0,value).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})}
+function pointsScore(player){return player.points}
+function showToast(message){toast.firstChild.textContent=`${message} `;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),2600)}
+function setMarketFullscreen(expanded){arenaCard.classList.toggle('market-fullscreen',expanded);document.body.classList.toggle('market-fullscreen-active',expanded);requestAnimationFrame(resizeMarket)}
+function publishMarketState(){fetch('/api/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({marketState,marketPrice,priceHistory:priceHistory.slice(-80).map(point=>point.price),players:players.map(player=>({name:player.name,spriteId:player.spriteId,points:player.points,coins:player.coins}))})}).catch(()=>{})}
+function makeTestName(){let candidate;do{generatedNameCounter+=1;candidate=`glorp${String(generatedNameCounter).padStart(3,'0')}`}while(players.some(player=>player.name.toLowerCase()===candidate.toLowerCase()));return candidate}
+function updateMarketControls(){
+  if(marketState==='running'){arenaStatus.innerHTML='<span class="pulse"></span> РЫНОК ОТКРЫТ';startMarketButton.innerHTML='<span>↻</span> Перезапустить рынок'}
+  else if(marketState==='finished'){arenaStatus.innerHTML='<span class="pulse"></span> ТОРГИ ЗАКРЫТЫ';startMarketButton.innerHTML='<span>↻</span> Новый раунд'}
+  else{arenaStatus.innerHTML='<span class="pulse"></span> ОЖИДАНИЕ РЫНКА';startMarketButton.innerHTML='<span>▶</span> Запустить торги'}
+  startMarketButton.disabled=players.length===0;arena.classList.toggle('market-active',marketState!=='waiting');
+  players.forEach(player=>{player.tooltipRank.textContent=marketState==='waiting'?'СТАРТОВЫЙ БАЛАНС · 1 000':`${formatPoints(player.points)} P · ${formatPoints(player.coins)} GC`});
+}
+function updateParticipantRoster(onlyPlayer=null){const targets=onlyPlayer?[onlyPlayer]:players;targets.forEach((player,index)=>{const playerIndex=players.indexOf(player);player.rosterName.textContent=hideNames?`Глорп ${playerIndex+1}`:player.name;player.rosterMoney.textContent=`${formatPoints(player.points)} P`;player.rosterCoins.textContent=`${formatPoints(player.coins)} GC`})}
+function updateMarketHud(timestamp=0,force=false){
+  const ranked=[...players].sort((a,b)=>pointsScore(b)-pointsScore(a)),leader=ranked[0];
+  marketLeaderName.textContent=leader?(hideNames?'Глорп':leader.name):'—';marketTopScore.textContent=marketPrice.toFixed(2);marketActive.textContent=String(players.filter(player=>player.coins>0).length);
+  if(!force&&timestamp-lastHudUpdate<250)return;lastHudUpdate=timestamp;marketLeaderboard.replaceChildren();
+  ranked.slice(0,5).forEach((player,index)=>{const row=document.createElement('li');row.className='market-row';const rank=document.createElement('b');rank.textContent=String(index+1).padStart(2,'0');const avatar=makeAvatar(player.spriteId);avatar.className='market-avatar';const name=document.createElement('span');name.className='market-name';name.textContent=hideNames?`Игрок ${index+1}`:player.name;const score=document.createElement('strong');score.textContent=formatPoints(pointsScore(player));const holdings=document.createElement('i');holdings.textContent=`${formatPoints(player.coins)} GC`;row.append(rank,avatar,name,score,holdings);marketLeaderboard.append(row)});publishMarketState();
+}
+function addPlayer(rawName){
+  if(players.length>=maxParticipants){showToast('Лимит 100 участников достигнут');return false}
+  let candidate=rawName;
+  if(!candidate)candidate=makeTestName();
+  const name=candidate.replace(/[^\w\u0400-\u04ff]/g,'').slice(0,25);if(!name||players.some(p=>p.name.toLowerCase()===name.toLowerCase()))return false;
+  const color=colors[Math.floor(Math.random()*colors.length)],freeSprites=Array.from({length:50},(_,index)=>index+1).filter(id=>!players.some(p=>p.spriteId===id)),spriteId=freeSprites.length?freeSprites[Math.floor(Math.random()*freeSprites.length)]:Math.floor(Math.random()*50)+1,position=waitingPosition(players.length);
+  const tag=document.createElement('div');tag.className='player-tag racer';tag.style.left=`${position.x}%`;tag.style.top=`${position.y}%`;tag.style.setProperty('--tag-color',color);tag.tabIndex=0;
+  const tooltip=document.createElement('div');tooltip.className='runner-tooltip';const tooltipName=document.createElement('span');tooltipName.className='runner-tooltip-name';tooltipName.textContent=name;const tooltipRank=document.createElement('span');tooltipRank.className='runner-tooltip-rank';tooltipRank.textContent='СТАРТОВЫЙ БАЛАНС · 1 000';tooltip.append(tooltipName,tooltipRank);
+  const sprite=makeSprite(spriteId),label=document.createElement('span');label.className='player-name';label.textContent=name;tag.append(tooltip,sprite,label);arena.append(tag);
+  const rosterEntry=document.createElement('div');rosterEntry.className='roster-entry';const rosterName=document.createElement('span');rosterName.className='roster-name';const rosterMoney=document.createElement('span');rosterMoney.className='roster-money';const rosterCoins=document.createElement('span');rosterCoins.className='roster-coins';rosterEntry.append(rosterName,rosterMoney,rosterCoins);
+  const player={name,color,spriteId,tag,tooltipRank,points:startingPoints,coins:0,rosterName,rosterMoney,rosterCoins};players.push(player);participantRoster.append(rosterEntry);participantRoster.dataset.count=players.length;emptyState.classList.add('hidden');countLabel.textContent=players.length;activityTotal.textContent=`${players.length} / ${maxParticipants}`;updateParticipantRoster(player);
+  const item=document.createElement('div');item.className='activity-item';const time=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}),icon=makeAvatar(spriteId),activityName=document.createElement('span'),stamp=document.createElement('span');activityName.className='activity-name';activityName.textContent=name;stamp.className='activity-time';stamp.textContent=time;item.append(icon,activityName,stamp);activityList.prepend(item);while(activityList.children.length>5)activityList.lastElementChild.remove();
+  showToast(marketState==='running'?`${name} вошёл на рынок с 1 000 P`:`${name} присоединился к GlorpCoin`);if(marketState==='waiting')placeWaitingPlayers();updateMarketControls();updateMarketHud(performance.now(),true);drawMarket();return true;
+}
+function drawMarket(){
+  if(!canvasWidth||!canvasHeight)return;const w=canvasWidth,h=canvasHeight;ctx.clearRect(0,0,w,h);
+  const bg=ctx.createLinearGradient(0,0,0,h);bg.addColorStop(0,'#101b2c');bg.addColorStop(.56,'#101827');bg.addColorStop(1,'#151628');ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+  const rosterBottom=participantRoster.offsetHeight?participantRoster.offsetTop+participantRoster.offsetHeight+40:0,pad={left:Math.max(66,w*.09),right:Math.max(30,w*.05),top:Math.max(200,h*.24,rosterBottom),bottom:Math.max(64,h*.12)},cw=w-pad.left-pad.right,ch=h-pad.top-pad.bottom;
+  const values=priceHistory.length?priceHistory.map(point=>point.price):Array(60).fill(marketPrice);let min=Math.min(...values,marketPrice),max=Math.max(...values,marketPrice);const span=Math.max(max-min,marketPrice*.08,1);min=Math.max(0,min-span*.22);max+=span*.22;
+  ctx.save();ctx.strokeStyle='#ffffff12';ctx.fillStyle='#aab3c5';ctx.lineWidth=1;ctx.font='10px "DM Mono",monospace';
+  for(let i=0;i<=5;i++){const y=pad.top+ch*i/5;ctx.beginPath();ctx.moveTo(pad.left,y);ctx.lineTo(w-pad.right,y);ctx.stroke();ctx.textAlign='right';ctx.textBaseline='middle';ctx.fillText(`${(max-(max-min)*i/5).toFixed(2)} ₽`,pad.left-10,y)}
+  for(let i=0;i<=8;i++){const x=pad.left+cw*i/8;ctx.beginPath();ctx.moveTo(x,pad.top);ctx.lineTo(x,h-pad.bottom);ctx.stroke()}
+  ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle='#d9deea';ctx.font='700 12px "DM Mono",monospace';ctx.fillText('GLORPCOIN  ·  ₽ / GC',pad.left,pad.top-34);ctx.fillStyle='#929db0';ctx.font='10px "DM Mono",monospace';ctx.fillText(marketState==='running'?'LIVE · СКАЧОК 5–20 ₽ В СЛУЧАЙНУЮ СТОРОНУ · 8 СЕК':'СИМУЛЯЦИЯ РЫНКА · БЕЗ РЕАЛЬНЫХ ДЕНЕГ',pad.left,pad.top-17);
+  const coords=values.map((price,index)=>({x:pad.left+cw*(values.length<2?1:index/(values.length-1)),y:pad.top+ch*(1-(price-min)/(max-min))})),rising=values.at(-1)>=values[0],color=rising?'#8ee1ba':'#ff7186';
+  if(coords.length){ctx.beginPath();coords.forEach((point,index)=>index?ctx.lineTo(point.x,point.y):ctx.moveTo(point.x,point.y));ctx.lineTo(coords.at(-1).x,h-pad.bottom);ctx.lineTo(coords[0].x,h-pad.bottom);ctx.closePath();const fill=ctx.createLinearGradient(0,pad.top,0,h-pad.bottom);fill.addColorStop(0,rising?'#8ee1ba35':'#ff718635');fill.addColorStop(1,'#10182700');ctx.fillStyle=fill;ctx.fill();ctx.beginPath();coords.forEach((point,index)=>index?ctx.lineTo(point.x,point.y):ctx.moveTo(point.x,point.y));ctx.strokeStyle=color;ctx.lineWidth=3;ctx.shadowColor=color;ctx.shadowBlur=16;ctx.stroke();ctx.shadowBlur=0;const last=coords.at(-1),label=`${marketPrice.toFixed(2)} ₽`;ctx.fillStyle=color;ctx.beginPath();ctx.arc(last.x,last.y,6,0,Math.PI*2);ctx.fill();ctx.font='800 17px "DM Mono",monospace';const labelWidth=ctx.measureText(label).width,tagWidth=labelWidth+22,tagHeight=32,tagX=Math.max(pad.left+4,Math.min(last.x+12,w-pad.right-tagWidth)),tagY=Math.max(pad.top+4,Math.min(last.y-tagHeight/2,h-pad.bottom-tagHeight));ctx.fillStyle='#0b1222ed';ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();ctx.roundRect(tagX,tagY,tagWidth,tagHeight,8);ctx.fill();ctx.stroke();ctx.fillStyle='#f4f6fb';ctx.textBaseline='middle';ctx.fillText(label,tagX+11,tagY+tagHeight/2)}
+  ctx.restore();
+}
+function resizeMarket(){const rect=marketCanvas.getBoundingClientRect();if(!rect.width||!rect.height)return;const dpr=window.devicePixelRatio||1;canvasWidth=rect.width;canvasHeight=rect.height;marketCanvas.width=Math.round(canvasWidth*dpr);marketCanvas.height=Math.round(canvasHeight*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);drawMarket()}
+function finishMarket(timeout=false){if(marketState!=='running')return;players.forEach(player=>{player.points+=player.coins*marketPrice;player.coins=0});updateParticipantRoster();marketState='finished';cancelAnimationFrame(marketFrame);const winner=[...players].sort((a,b)=>pointsScore(b)-pointsScore(a))[0];marketMessage.textContent=winner?`${timeout?'ВРЕМЯ ВЫШЛО · ':''}GC ОБМЕНЯНЫ ПО ${marketPrice.toFixed(2)} ₽ · ПОБЕДИТЕЛЬ: ${hideNames?'ИГРОК':winner.name} · ${formatPoints(pointsScore(winner))} POINTS`:'ТОРГИ ЗАВЕРШЕНЫ';marketMessage.hidden=false;setMarketFullscreen(false);updateMarketControls();updateMarketHud(performance.now(),true);drawMarket()}
+function updateMarket(timestamp){if(marketState!=='running')return;if(timestamp-lastPriceTick>=priceTickMs){const jump=5+Math.random()*15;let direction=Math.random()<.5?-1:1;if(marketPrice+direction*jump<.5||marketPrice+direction*jump>250)direction*=-1;marketPrice+=direction*jump;priceHistory.push({price:marketPrice,time:timestamp-marketStartedAt});if(priceHistory.length>120)priceHistory.shift();lastPriceTick=timestamp;updateMarketHud(timestamp,true)}if(timestamp-marketStartedAt>=marketDuration){finishMarket(true);return}drawMarket();marketFrame=requestAnimationFrame(updateMarket)}
+function startMarket(){if(!players.length)return;cancelAnimationFrame(marketFrame);marketState='running';setMarketFullscreen(true);marketStartedAt=performance.now();lastPriceTick=marketStartedAt;marketPrice=50;priceHistory=Array.from({length:6},(_,index)=>({price:marketPrice,time:index*priceTickMs}));marketMessage.hidden=true;players.forEach(player=>{player.points=startingPoints;player.coins=0});updateParticipantRoster();updateMarketControls();updateMarketHud(marketStartedAt,true);drawMarket();marketFrame=requestAnimationFrame(updateMarket)}
+function showTradeResult(player,message){player.tooltipRank.textContent=`${formatPoints(player.points)} P · ${formatPoints(player.coins)} GC`;updateParticipantRoster(player);showToast(`${player.name}: ${message}`);updateMarketHud(performance.now(),true)}
+function handleTradeCommand(login,text,requestId=null){
+  const report=(ok,message)=>{if(requestId)fetch('/api/trade-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:requestId,login,ok,message})}).catch(()=>{});return ok};
+  if(typeof text!=='string')return report(false,'Неверная команда.');const [token,arg]=text.trim().split(/\s+/);const match=token?.match(/^!(glorp|к|п)(\d+(?:[.,]\d+)?)?$/i);if(!match)return report(false,'Не удалось распознать команду.');const command=match[1].toLowerCase();if(command==='glorp'){const added=addPlayer(login);return report(added,added?'Ты вошёл в рынок.':'Не удалось войти в рынок.')}
+  const player=players.find(item=>item.name.toLowerCase()===login.toLowerCase());if(!player){showToast(`${login}, сначала напиши !glorp`);return report(false,'Сначала напиши !glorp в чате.')};if(marketState!=='running'){showToast('Рынок закрыт — дождись запуска торгов');return report(false,'Торги сейчас закрыты.')}
+  const amountRaw=match[2]||arg;if(!amountRaw){showToast(`${login}, укажи количество: !к 100`);return report(false,'Укажи количество.')};const amount=Number(amountRaw.replace(',','.'));if(!Number.isFinite(amount)||amount<=0||amount>1000000){showToast('Количество должно быть больше 0');return report(false,'Количество должно быть больше нуля.')};const quantity=Math.floor(amount*100)/100;
+  if(command==='к'){const cost=quantity*marketPrice;if(cost>player.points+.0001){const message=`не хватает points для покупки ${formatPoints(quantity)} GC`;showTradeResult(player,message);return report(false,`Не хватает points. Нужно ${formatPoints(cost)} P.`)}player.points=Math.max(0,player.points-cost);player.coins+=quantity;const message=`купил ${formatPoints(quantity)} GC за ${formatPoints(cost)} ₽`;showTradeResult(player,message);return report(true,`Куплено ${formatPoints(quantity)} GC.`)}
+  if(quantity>player.coins+.0001){showTradeResult(player,`у тебя только ${formatPoints(player.coins)} GC`);return report(false,`У тебя только ${formatPoints(player.coins)} GC.`)}const proceeds=quantity*marketPrice;player.coins=Math.max(0,player.coins-quantity);player.points+=proceeds;const message=`продал ${formatPoints(quantity)} GC за ${formatPoints(proceeds)} ₽`;showTradeResult(player,message);return report(true,`Продано ${formatPoints(quantity)} GC.`)
+}
+function clearArena(){marketState='waiting';cancelAnimationFrame(marketFrame);setMarketFullscreen(false);players.splice(0).forEach(player=>player.tag.remove());countLabel.textContent='0';activityTotal.textContent=`0 / ${maxParticipants}`;activityList.innerHTML='<div class="activity-empty">Здесь появятся участники рынка</div>';emptyState.classList.remove('hidden');marketPrice=50;priceHistory=[];marketMessage.hidden=true;marketMessage.textContent='';marketLeaderboard.replaceChildren();participantRoster.replaceChildren();participantRoster.dataset.count='0';marketLeaderName.textContent='—';marketTopScore.textContent='50.00';marketActive.textContent='0';updateMarketControls();publishMarketState();drawMarket()}
+function toggleNameLabels(){hideNames=!hideNames;arena.classList.toggle('hide-names',hideNames);toggleNamesButton.textContent=hideNames?'Показать ники':'Скрыть ники';toggleNamesButton.setAttribute('aria-pressed',String(hideNames));updateParticipantRoster();updateMarketHud(performance.now(),true);drawMarket()}
+async function makeAuth(password,salt,challenge){const digest=async value=>new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));const toBase64=bytes=>btoa(String.fromCharCode(...bytes));const secret=toBase64(await digest(password+salt));return toBase64(await digest(secret+challenge))}
+function connectStreamerBot(){
+  if(chatSocket&&chatSocket.readyState<2){chatConnectionError='';clearTimeout(chatSocketTimeout);chatSocket.close();chatSocket=null;connectButton.innerHTML='<span>◉</span> Подключить Streamer.bot';connectButton.classList.remove('connected');setChatStatus('ЧАТ ОТКЛЮЧЁН');return}
+  const host=localStorage.getItem('dropin_sb_host')||'127.0.0.1',port=localStorage.getItem('dropin_sb_port')||'8080';chatConnectionError='';setChatStatus('ПОДКЛЮЧАЕМ STREAMER.BOT...');connectButton.innerHTML='<span>◉</span> Подключаемся…';connectButton.classList.remove('connected');let socket;
+  try{socket=new WebSocket(`ws://${host}:${port}/`);chatSocket=socket}catch(error){chatConnectionError='НЕ УДАЛОСЬ СОЗДАТЬ WEBSOCKET';setChatStatus(chatConnectionError);connectButton.innerHTML='<span>◉</span> Повторить подключение';showToast(`Адрес Streamer.bot: ${host}:${port}`);return}
+  let subscribed=false;const failConnection=(status,detail)=>{if(chatSocket!==socket)return;clearTimeout(chatSocketTimeout);chatConnectionError=status;setChatStatus(status);connectButton.innerHTML='<span>◉</span> Повторить подключение';connectButton.classList.remove('connected');showToast(detail);socket.close()};
+  const subscribe=()=>{if(socket.readyState!==WebSocket.OPEN)return;socket.send(JSON.stringify({request:'Subscribe',id:'dropin-chat',events:{Twitch:['ChatMessage']}}));subscribed=true;setChatStatus('ПОДКЛЮЧЕНО · ЖДУ ЧАТ');clearTimeout(chatSocketTimeout);chatSocketTimeout=setTimeout(()=>failConnection('НЕТ ОТВЕТА ОТ STREAMER.BOT','Streamer.bot не подтвердил подписку на Twitch ChatMessage.'),5000)};
+  socket.addEventListener('open',()=>{connectButton.innerHTML='<span>◉</span> Подключено, проверяю…';clearTimeout(chatSocketTimeout);chatSocketTimeout=setTimeout(()=>failConnection('STREAMER.BOT НЕ ОТВЕТИЛ','Проверь WebSocket Server и адрес 127.0.0.1:8080.'),5000)});
+  socket.addEventListener('message',async event=>{let packet;try{packet=JSON.parse(event.data)}catch{return}
+    if(packet.request==='Hello'&&!subscribed){clearTimeout(chatSocketTimeout);if(packet.authentication){const password=prompt('В Streamer.bot включена защита WebSocket. Введи пароль WebSocket:');if(password===null){chatConnectionError='ПОДКЛЮЧЕНИЕ ОТМЕНЕНО';setChatStatus(chatConnectionError);socket.close();return}const authentication=await makeAuth(password,packet.authentication.salt,packet.authentication.challenge);socket.send(JSON.stringify({request:'Authenticate',id:'dropin-auth',authentication}));chatSocketTimeout=setTimeout(()=>failConnection('НЕТ ОТВЕТА АВТОРИЗАЦИИ','Проверь пароль WebSocket Streamer.bot.'),5000);return}subscribe();return}
+    if(packet.id==='dropin-auth'){clearTimeout(chatSocketTimeout);if(packet.status==='ok')subscribe();else failConnection('ПАРОЛЬ WEBSOCKET НЕ ПОДОШЁЛ','Проверь пароль в настройках WebSocket Streamer.bot.');return}
+    if(packet.id==='dropin-chat'){clearTimeout(chatSocketTimeout);if(packet.status==='ok'){chatConnectionError='';setChatStatus('ЧАТ STREAMER.BOT',true);connectButton.innerHTML='<span>◉</span> Streamer.bot подключён';connectButton.classList.add('connected')}else failConnection('НЕ УДАЛОСЬ ПОДПИСАТЬСЯ',packet.error||'Не удалось подписаться на Twitch ChatMessage.');return}
+    if(packet.event?.source==='Twitch'&&packet.event?.type==='ChatMessage'){const data=packet.data||{},text=typeof data.text==='string'?data.text:typeof data.message==='string'?data.message:'',login=data.user?.login||data.userLogin||data.userName||data.user?.name;if(login){const broadcaster=data.broadcaster?.login||data.broadcaster?.name;if(broadcaster)document.querySelector('.host-card strong').textContent=broadcaster;handleTradeCommand(login,text)}}
+  });
+  socket.addEventListener('close',()=>{clearTimeout(chatSocketTimeout);if(chatSocket===socket){chatSocket=null;connectButton.innerHTML='<span>◉</span> Повторить подключение';connectButton.classList.remove('connected');setChatStatus(chatConnectionError||'ЧАТ ОТКЛЮЧЁН')}});
+  socket.addEventListener('error',()=>{if(chatSocket===socket)failConnection('STREAMER.BOT НЕДОСТУПЕН',`Не удалось подключиться к ${host}:${port}. Проверь сервер WebSocket.`)});
+}
+document.querySelector('#spawnButton').addEventListener('click',()=>addPlayer());
+document.querySelector('#clearButton').addEventListener('click',clearArena);
+startMarketButton.addEventListener('click',startMarket);toggleNamesButton.addEventListener('click',toggleNameLabels);connectButton.addEventListener('click',connectStreamerBot);
+const playerTradeBridge=new EventSource('/api/events?role=host');playerTradeBridge.onopen=publishMarketState;playerTradeBridge.addEventListener('trade',event=>{let trade;try{trade=JSON.parse(event.data)}catch{return}const command=trade.type==='buy'?'к':'п';handleTradeCommand(trade.login,`!${command} ${trade.quantity}`,trade.id)});
+document.querySelector('#settingsButton').addEventListener('click',()=>{const currentHost=localStorage.getItem('dropin_sb_host')||'127.0.0.1',host=prompt('Адрес Streamer.bot',currentHost);if(host===null)return;const port=prompt('Порт WebSocket (по умолчанию 8080)',localStorage.getItem('dropin_sb_port')||'8080');if(port===null)return;localStorage.setItem('dropin_sb_host',host.trim()||'127.0.0.1');localStorage.setItem('dropin_sb_port',port.trim()||'8080')});
+document.addEventListener('keydown',event=>{if(event.code==='Space'&&!['BUTTON','INPUT','TEXTAREA'].includes(document.activeElement.tagName)){event.preventDefault();addPlayer()}});
+window.addEventListener('resize',()=>{resizeMarket();if(marketState==='waiting')placeWaitingPlayers()});
+priceHistory=Array.from({length:60},()=>({price:marketPrice,time:0}));resizeMarket();updateMarketControls();updateMarketHud(performance.now(),true);drawMarket();
